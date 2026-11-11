@@ -1,1 +1,0 @@
-pyinstaller --name "nothing" --noconsole --add-data="models;models" main.py
