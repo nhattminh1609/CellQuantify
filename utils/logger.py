@@ -3,13 +3,15 @@ import os
 import sys
 from logging.handlers import RotatingFileHandler
 
-def setup_logger():
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+import config
+
+def setup_logger(log_dir=config.LOG_DIR):
+    os.makedirs(log_dir, exist_ok=True)
 
     logger = logging.getLogger("CellCounter")
     logger.setLevel(logging.DEBUG)
+    if logger.handlers:  # already configured (avoid duplicate log lines)
+        return logger
 
     log_format = "[%(asctime)s.%(msecs)03d] [%(levelname)-8s] [%(threadName)-15s] [%(module)s:%(lineno)d] %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"

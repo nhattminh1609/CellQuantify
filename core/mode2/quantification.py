@@ -1,5 +1,8 @@
 import cv2
 import numpy as np
+
+import config
+from core.common.grid import assign_grid_positions, coverage_percent
 from utils.helpers import calculate_scale_from_crop, draw_scale_bar
 
 GRID_COLORS = {
@@ -15,49 +18,44 @@ CLASS_COLORS = {
     "undefine": {"fill": [0, 180, 180], "border": (0, 255, 255), "dot": (255, 255, 255)}
 }
 
-def quantify_multilabel_wells(well_coords, cell_boxes, w_crop=None):
-    total_wells = len(well_coords)
-    well_statuses = []
+GRID_MODES = ["Full grid", "Full red grid", "Only a549", "Only nk", "Hide"]
+MASK_MODES = ["All labels", "a549", "nk", "undefine", "Hide"]
+HIDE = "Hide"
 
-    if total_wells == 0:
-        return [], 0.0, 15.5, 0.775
+
+def quantify_multilabel_wells(well_coords, cell_boxes, w_crop=None):
+    """Assign cell labels to wells (cell box centre within 0.9 * radius of the well centre).
+
+    Returns ``(well_statuses, coverage_percent, radius_px, px_per_um)``.
+    Coverage counts wells containing a549 and/or nk cells.
+    """
+    if not well_coords:
+        return [], 0.0, 15.5, config.BASE_PX_PER_UM
 
     ratio_new, radius_px, _ = calculate_scale_from_crop(w_crop=w_crop, well_coords=well_coords)
+    ordered, positions = assign_grid_positions(well_coords, radius_px)
+    max_dist = radius_px * config.MODE2_CENTER_DISTANCE_FACTOR
 
-    sorted_by_y = sorted(well_coords, key=lambda p: p[1])
-    rows = []
-    if sorted_by_y:
-        current_row = [sorted_by_y[0]]
-        for p in sorted_by_y[1:]:
-            if p[1] - current_row[-1][1] < radius_px * 1.5:
-                current_row.append(p)
-            else:
-                rows.append(current_row)
-                current_row = [p]
-        rows.append(current_row)
-
-    final_well_coords = []
-    well_grid_info = {}
-
-    for row_idx, row in enumerate(rows, start=1):
-        sorted_row = sorted(row, key=lambda p: p[0])
-        for col_idx, p in enumerate(sorted_row, start=1):
-            final_well_coords.append(p)
-            well_grid_info[p] = (row_idx, col_idx)
-
+    well_statuses = []
     covered_count = 0
 
-    for idx, (wx, wy) in enumerate(final_well_coords, start=1):
-        has_a549 = False
-        has_nk = False
-        has_undefine = False
+    for idx, (wx, wy) in enumerate(ordered, start=1):
+        has_a549 = has_nk = has_undefine = False
 
         for box in cell_boxes:
             x1, y1, x2, y2, label_name = box[:5]
             cx = (x1 + x2) / 2.0
             cy = (y1 + y2) / 2.0
             center_dist = ((wx - cx) ** 2 + (wy - cy) ** 2) ** 0.5
-            if center_dist <= radius_px * 0.90:
+
+            # Distance from well center to closest point on cell bounding box
+            closest_x = max(x1, min(wx, x2))
+            closest_y = max(y1, min(wy, y2))
+            distance = ((wx - closest_x) ** 2 + (wy - closest_y) ** 2) ** 0.5
+
+            # Associate if cell bounding box touches/intersects the well circle (distance <= radius_px)
+            # or cell center is within well (center_dist <= radius_px * 1.15)
+            if distance <= radius_px or center_dist <= radius_px * 1.15:
                 if label_name == "a549":
                     has_a549 = True
                 elif label_name == "nk":
@@ -65,11 +63,10 @@ def quantify_multilabel_wells(well_coords, cell_boxes, w_crop=None):
                 else:
                     has_undefine = True
 
-        has_any = has_a549 or has_nk or has_undefine
         if has_a549 or has_nk:
             covered_count += 1
 
-        row_idx, col_idx = well_grid_info.get((wx, wy), ((idx // 10) + 1, (idx % 10) + 1))
+        row_idx, col_idx = positions[(wx, wy)]
         well_statuses.append({
             "id": idx,
             "row": row_idx,
@@ -78,28 +75,37 @@ def quantify_multilabel_wells(well_coords, cell_boxes, w_crop=None):
             "has_a549": has_a549,
             "has_nk": has_nk,
             "has_undefine": has_undefine,
-            "has_cell": has_any
+            "has_cell": has_a549 or has_nk or has_undefine
         })
 
-    coverage_percent = (covered_count / total_wells) * 100.0 if total_wells > 0 else 0.0
-    return well_statuses, coverage_percent, radius_px, ratio_new
+    return well_statuses, coverage_percent(covered_count, len(well_coords)), radius_px, ratio_new
 
-def render_mode2_canvas(base_img, seg_data, well_statuses, radius, ratio_new=None, grid_mode="Full grid", mask_mode="All labels", show_scale_bar=False):
+
+def render_mode2_canvas(base_img, seg_data, well_statuses, radius, ratio_new=None,
+                        grid_mode="Full grid", mask_mode="All labels", active_masks=None,
+                        show_scale_bar=False):
     canvas = base_img.copy()
 
-    if mask_mode != "Hide":
+    # Determine which mask classes are actively enabled
+    if active_masks is not None:
+        if isinstance(active_masks, (list, tuple, set)):
+            active_labels = [lbl for lbl in config.MODE2_CLASS_NAMES if lbl in active_masks]
+        else:
+            active_labels = []
+    elif mask_mode is not None:
+        if isinstance(mask_mode, (list, tuple, set)):
+            active_labels = [lbl for lbl in config.MODE2_CLASS_NAMES if lbl in mask_mode]
+        elif mask_mode == "All labels":
+            active_labels = list(config.MODE2_CLASS_NAMES)
+        elif mask_mode in config.MODE2_CLASS_NAMES:
+            active_labels = [mask_mode]
+        else:
+            active_labels = []
+    else:
+        active_labels = list(config.MODE2_CLASS_NAMES)
+
+    if active_labels:
         colored_mask = np.zeros_like(canvas)
-        active_labels = []
-
-        if mask_mode == "All labels":
-            active_labels = ["a549", "nk", "undefine"]
-        elif mask_mode == "a549":
-            active_labels = ["a549"]
-        elif mask_mode == "nk":
-            active_labels = ["nk"]
-        elif mask_mode == "undefine":
-            active_labels = ["undefine"]
-
         for lbl in active_labels:
             mask_orig = seg_data.get("masks", {}).get(lbl)
             if mask_orig is not None and np.any(mask_orig > 0):
@@ -116,7 +122,7 @@ def render_mode2_canvas(base_img, seg_data, well_statuses, radius, ratio_new=Non
             for (cx, cy) in peaks:
                 cv2.circle(canvas, (cx, cy), radius=1, color=CLASS_COLORS[lbl]["dot"], thickness=-1)
 
-    if grid_mode != "Hide grid":
+    if grid_mode != HIDE:
         radius_int = max(2, int(round(radius)))
 
         for well in well_statuses:
@@ -147,7 +153,7 @@ def render_mode2_canvas(base_img, seg_data, well_statuses, radius, ratio_new=Non
                     cv2.circle(canvas, (wx, wy), radius_int, GRID_COLORS["nk"], 1)
 
     if show_scale_bar:
-        actual_ratio = ratio_new if ratio_new is not None else (radius / 20.0)
+        actual_ratio = ratio_new if ratio_new is not None else (radius / config.WELL_RADIUS_UM)
         canvas = draw_scale_bar(canvas, well_statuses, actual_ratio)
 
     return canvas

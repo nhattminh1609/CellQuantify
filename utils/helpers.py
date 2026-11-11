@@ -1,56 +1,52 @@
+"""Pure (Qt-free) image/scale helpers. Qt conversions live in ui/common/qt_utils.py."""
 import cv2
-from PySide6.QtGui import QImage, QPixmap
 
-def cv2_to_qpixmap(cv_img):
-    if cv_img is None:
-        return QPixmap()
-    if cv_img.ndim == 2:
-        h, w = cv_img.shape
-        bytes_per_line = w
-        q_img = QImage(cv_img.data, w, h, bytes_per_line, QImage.Format_Grayscale8)
-    else:
-        h, w, ch = cv_img.shape
-        bytes_per_line = ch * w
-        rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
-        q_img = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format_RGB888)
-    return QPixmap.fromImage(q_img)
+import config
+
 
 def calculate_scale_from_crop(w_crop=None, well_coords=None):
-    orig_ratio = 0.775
+    """Return ``(px_per_um, well_radius_px, well_pitch_px)`` for the cropped image.
+
+    Priority: explicit crop width -> span of detected wells -> nominal calibration.
+    """
+    orig_ratio = config.BASE_PX_PER_UM
+
+    def from_ratio(ratio):
+        return ratio, config.WELL_RADIUS_UM * ratio, config.WELL_PITCH_UM * ratio
 
     if w_crop is not None and w_crop > 0:
-        ratio = orig_ratio * (640.0 / float(w_crop))
-        radius = 20.0 * ratio
-        pitch = 70.0 * ratio
-        return ratio, radius, pitch
+        return from_ratio(orig_ratio * (float(config.CROP_OUTPUT_SIZE) / float(w_crop)))
 
     if well_coords and len(well_coords) >= 4:
         xs = [p[0] for p in well_coords]
         ys = [p[1] for p in well_coords]
         span = max(max(xs) - min(xs), max(ys) - min(ys))
         if span > 0:
-            ratio = span / 630.0
-            radius = 20.0 * ratio
-            pitch = 70.0 * ratio
-            return ratio, radius, pitch
+            return from_ratio(span / config.GRID_SPAN_UM)
 
-    ratio = orig_ratio
-    return ratio, 20.0 * ratio, 70.0 * ratio
+    return from_ratio(orig_ratio)
+
 
 def get_physical_grid_params(well_coords=None, w_crop=None):
     ratio, radius, pitch = calculate_scale_from_crop(w_crop, well_coords)
     return pitch, radius, ratio
 
-def draw_scale_bar(canvas, well_statuses, scale_param, bar_um=200):
+
+def draw_scale_bar(canvas, well_statuses, scale_param, bar_um=config.SCALE_BAR_UM):
+    """Draw a scale bar below the bottom-right wells.
+
+    ``scale_param`` is interpreted as a well radius in px when > 3.0, otherwise
+    as a px/µm ratio (kept for backward compatibility).
+    """
     img = canvas.copy()
     h, w = img.shape[:2]
 
     if scale_param > 3.0:
-        ratio = scale_param / 20.0
+        ratio = scale_param / config.WELL_RADIUS_UM
         radius_approx = scale_param
     else:
         ratio = scale_param
-        radius_approx = 20.0 * ratio
+        radius_approx = config.WELL_RADIUS_UM * ratio
 
     bar_len_px = int(round(bar_um * ratio))
 

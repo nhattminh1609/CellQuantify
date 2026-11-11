@@ -1,43 +1,30 @@
 import cv2
 import numpy as np
 
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
+import config
+from core.common.segmentation_utils import (preprocess, sigmoid, filter_components,
+                                            scale_contours, find_cell_centers)
 
-CLASS_NAMES = ["a549", "nk", "undefine"]
+CLASS_NAMES = config.MODE2_CLASS_NAMES
 
-CLASS_COLORS = {
-    "a549": {"fill": [0, 180, 0], "border": (0, 255, 0), "dot": (0, 255, 0)},
-    "nk": {"fill": [0, 0, 180], "border": (0, 0, 255), "dot": (0, 0, 255)},
-    "undefine": {"fill": [0, 180, 180], "border": (0, 255, 255), "dot": (0, 255, 255)}
-}
 
 class MultiLabelSegmentationProcessor:
-    def __init__(self, conf_threshold=0.8):
+    def __init__(self, conf_threshold=None,
+                 min_component_area=None):
         self.conf_threshold = conf_threshold
+        self.min_component_area = min_component_area
 
     def process(self, img, model):
-        if hasattr(model, "get_input_size"):
-            input_w, input_h = model.get_input_size()
-        else:
-            meta = model.session.get_inputs()[0]
-            input_h = meta.shape[2] if isinstance(meta.shape[2], int) else 640
-            input_w = meta.shape[3] if isinstance(meta.shape[3], int) else 640
+        """Run multi-label segmentation (one probability map per class).
 
+        Returns a ``seg_data`` dict with keys ``masks``, ``contours``, ``peaks``,
+        ``cell_boxes`` (``(x1, y1, x2, y2, label)``) and ``class_counts``.
+        """
+        input_w, input_h = model.get_input_size()
         orig_h, orig_w = img.shape[:2]
 
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img_resized = cv2.resize(img_rgb, (input_w, input_h))
-        img_normalized = img_resized.astype(np.float32) / 255.0
-
-        img_tensor = np.transpose(img_normalized, [2, 0, 1])
-        img_tensor = np.expand_dims(img_tensor, axis=0)
-
-        if hasattr(model, "inference"):
-            raw_output = model.inference(img_tensor)
-        else:
-            input_name = model.session.get_inputs()[0].name
-            raw_output = model.session.run(None, {input_name: img_tensor})[0]
+        img_resized, img_tensor = preprocess(img, input_w, input_h)
+        raw_output = model.inference(img_tensor)
 
         prob_maps = sigmoid(raw_output).squeeze()
         if prob_maps.ndim == 2:
@@ -45,7 +32,6 @@ class MultiLabelSegmentationProcessor:
 
         scale_x = orig_w / input_w
         scale_y = orig_h / input_h
-        SINGLE_CELL_THRESHOLD = 100
 
         class_masks_orig = {}
         class_contours = {}
@@ -57,106 +43,59 @@ class MultiLabelSegmentationProcessor:
 
         for c_idx in range(num_channels):
             label_name = CLASS_NAMES[c_idx]
-            ch_prob = prob_maps[c_idx]
-            binary_mask = (ch_prob > self.conf_threshold).astype(np.uint8) * 255
 
-            num_components, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_mask, connectivity=8)
-            clean_binary_mask = np.zeros_like(binary_mask)
-            valid_components = []
+            # Determine confidence threshold for this class
+            if isinstance(self.conf_threshold, (int, float)):
+                th = float(self.conf_threshold)
+            elif isinstance(self.conf_threshold, dict):
+                th = float(self.conf_threshold.get(label_name, config.MODE2_CONF_THRESHOLD))
+            else:
+                th = float(config.MODE2_CLASS_CONF_THRESHOLDS.get(label_name, config.MODE2_CONF_THRESHOLD))
 
-            for i in range(1, num_components):
-                if stats[i, cv2.CC_STAT_AREA] >= 30:
-                    clean_binary_mask[labels == i] = 255
-                    valid_components.append(i)
+            # Binary mask generation with competitive dominance for undefined label
+            if label_name == "undefine" and num_channels >= 3:
+                # Competitive dominance rule: An undefined / ambiguous cell is only
+                # recognized where its probability is not dominated by definitive A549 or NK cells.
+                # This prevents spurious overlapping masks from corrupting genuine cell overlays.
+                is_active = (prob_maps[c_idx] > th) & (prob_maps[c_idx] >= prob_maps[0]) & (prob_maps[c_idx] >= prob_maps[1])
+            else:
+                is_active = (prob_maps[c_idx] > th)
 
-            mask_orig = cv2.resize(clean_binary_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
-            class_masks_orig[label_name] = mask_orig
+            binary_mask = is_active.astype(np.uint8) * 255
 
-            contours, _ = cv2.findContours(clean_binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            scaled_contours = []
-            for cnt in contours:
-                scaled_cnt = np.zeros_like(cnt, dtype=np.float32)
-                scaled_cnt[:, 0, 0] = cnt[:, 0, 0] * scale_x
-                scaled_cnt[:, 0, 1] = cnt[:, 0, 1] * scale_y
-                scaled_cnt = scaled_cnt.astype(np.int32)
-                scaled_contours.append(scaled_cnt)
-                x, y, w, h = cv2.boundingRect(scaled_cnt)
-                cell_boxes.append((x, y, x + w, y + h, label_name))
+            # Safeguard: if background saturation makes the raw mask occupy > 40% of the entire frame,
+            # adaptively raise the threshold to the top 15% quantile of that class to prevent wipeout by filter_components.
+            if np.mean(binary_mask > 0) > 0.40:
+                adaptive_th = max(th, float(np.percentile(prob_maps[c_idx], 85)))
+                if label_name == "undefine" and num_channels >= 3:
+                    is_active = (prob_maps[c_idx] > adaptive_th) & (prob_maps[c_idx] >= prob_maps[0]) & (prob_maps[c_idx] >= prob_maps[1])
+                else:
+                    is_active = (prob_maps[c_idx] > adaptive_th)
+                binary_mask = is_active.astype(np.uint8) * 255
 
+            # Determine minimum component area for this class
+            if isinstance(self.min_component_area, (int, float)):
+                min_area = int(self.min_component_area)
+            elif isinstance(self.min_component_area, dict):
+                min_area = int(self.min_component_area.get(label_name, config.MODE2_MIN_COMPONENT_AREA))
+            else:
+                min_area = int(config.MODE2_CLASS_MIN_AREAS.get(label_name, config.MODE2_MIN_COMPONENT_AREA))
+
+            clean_mask, labels, stats, centroids, valid_ids = filter_components(binary_mask, min_area)
+            class_masks_orig[label_name] = cv2.resize(clean_mask, (orig_w, orig_h), interpolation=cv2.INTER_NEAREST)
+
+            scaled_contours, boxes = scale_contours(clean_mask, scale_x, scale_y)
             class_contours[label_name] = scaled_contours
-            peaks_list = []
+            cell_boxes.extend(box + (label_name,) for box in boxes)
 
-            for i in valid_components:
-                area = stats[i, cv2.CC_STAT_AREA]
+            peaks = find_cell_centers(labels, stats, centroids, valid_ids, img_resized, scale_x, scale_y)
+            class_peaks[label_name] = peaks
+            class_counts[label_name] = len(peaks)
 
-                if area < SINGLE_CELL_THRESHOLD:
-                    cx = int(round(centroids[i][0] * scale_x))
-                    cy = int(round(centroids[i][1] * scale_y))
-                    peaks_list.append((cx, cy))
-                    class_counts[label_name] += 1
-                    continue
-
-                x = stats[i, cv2.CC_STAT_LEFT]
-                y = stats[i, cv2.CC_STAT_TOP]
-                w = stats[i, cv2.CC_STAT_WIDTH]
-                h = stats[i, cv2.CC_STAT_HEIGHT]
-
-                pad = 2
-                x1 = max(0, x - pad)
-                y1 = max(0, y - pad)
-                x2 = min(input_w, x + w + 10)
-                y2 = min(input_h, y + h + 5)
-
-                local_cluster_mask = labels[y1:y2, x1:x2] == i
-                if not np.any(local_cluster_mask):
-                    continue
-
-                local_img_crop = img_resized[y1:y2, x1:x2]
-                local_gray = cv2.cvtColor(local_img_crop, cv2.COLOR_RGB2GRAY)
-                local_gray_smooth = cv2.normalize(local_gray, None, 0, 255, cv2.NORM_MINMAX)
-                local_gray_smooth = np.clip(
-                    cv2.createCLAHE(4.5, (4, 4)).apply(local_gray_smooth).astype(np.int16) - 10, 0, 255
-                ).astype(np.uint8)
-
-                local_max = cv2.dilate(local_gray_smooth, np.ones((3, 3), np.uint8))
-                peaks_mask = (local_gray_smooth == local_max) & (local_gray_smooth > 2) & local_cluster_mask
-                peaks_uint8 = peaks_mask.astype(np.uint8) * 255
-                peaks_uint8 = cv2.dilate(peaks_uint8, np.ones((5, 5), np.uint8))
-
-                num_peaks, peak_labels, peak_stats, peak_centroids = cv2.connectedComponentsWithStats(
-                    peaks_uint8, connectivity=8
-                )
-
-                if num_peaks <= 2:
-                    cx = int(round(centroids[i][0] * scale_x))
-                    cy = int(round(centroids[i][1] * scale_y))
-                    peaks_list.append((cx, cy))
-                    class_counts[label_name] += 1
-                    continue
-
-                for p_id in range(1, num_peaks):
-                    local_cx, local_cy = peak_centroids[p_id]
-                    py, px = int(round(local_cy)), int(round(local_cx))
-                    if (
-                        py >= local_cluster_mask.shape[0]
-                        or px >= local_cluster_mask.shape[1]
-                        or not local_cluster_mask[py, px]
-                    ):
-                        continue
-
-                    global_cx = int(round((x1 + local_cx) * scale_x))
-                    global_cy = int(round((y1 + local_cy) * scale_y))
-                    peaks_list.append((global_cx, global_cy))
-                    class_counts[label_name] += 1
-
-            class_peaks[label_name] = peaks_list
-
-        seg_data = {
+        return {
             "masks": class_masks_orig,
             "contours": class_contours,
             "peaks": class_peaks,
             "cell_boxes": cell_boxes,
-            "class_counts": class_counts
+            "class_counts": class_counts,
         }
-
-        return seg_data

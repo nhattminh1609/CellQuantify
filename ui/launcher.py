@@ -1,18 +1,51 @@
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QListWidget, QListWidgetItem, QTextEdit, QPushButton, QFrame)
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize, QTimer
 
 from ui.common.theme import GLOBAL_STYLESHEET
+from ui.common.window_manager import show_window
 from ui.mode1.main_window import SingleLabelWindow
 from ui.mode2.main_window import MultiLabelWindow
+
+LAUNCHER_LIST_STYLE = """
+    QListWidget#LauncherModeList {
+        border: 1px solid #D0D0D0;
+        border-radius: 6px;
+        background-color: #FFFFFF;
+        outline: none;
+        padding: 4px;
+    }
+    QListWidget#LauncherModeList::item {
+        padding: 10px 14px;
+        border-radius: 5px;
+        font-size: 13px;
+        font-weight: 500;
+        color: #212529;
+        background-color: #F8FAFC;
+        border: 1px solid #E2E8F0;
+        margin: 2px 2px;
+    }
+    QListWidget#LauncherModeList::item:hover {
+        background-color: #F1F5F9;
+        border-color: #94A3B8;
+    }
+    QListWidget#LauncherModeList::item:selected {
+        background-color: #E0F2FE;
+        border: 1.5px solid #0284C7;
+        color: #0369A1;
+        font-weight: bold;
+    }
+"""
+
 
 class LauncherWindow(QWidget):
     def __init__(self):
         super().__init__()
+        self._is_launching = False
         self.setWindowTitle("Cell Counter - Select Working Mode")
-        self.setFixedSize(780, 500)
-        self.setStyleSheet(GLOBAL_STYLESHEET)
-        self.active_window = None
+        self.setMinimumSize(800, 520)
+        self.resize(820, 560)
+        self.setStyleSheet(GLOBAL_STYLESHEET + LAUNCHER_LIST_STYLE)
 
         self.modes_info = {
             "Mode 1: Single-Label Quantification": (
@@ -30,7 +63,7 @@ class LauncherWindow(QWidget):
                 "<ul>"
                 "<li><b>Grid Detection:</b> Standard 10x10 microfluidic well array alignment.</li>"
                 "<li><b>Inference:</b> Multi-class probability maps.</li>"
-                "<li><b>Inspection:</b> Dynamic ListBox filtering for grid boundaries and segmentation masks.</li>"
+                "<li><b>Inspection:</b> Dynamic multi-checkbox mask mixing (A549, NK, Undefined) and grid overlays.</li>"
                 "</ul>"
             )
         }
@@ -46,10 +79,21 @@ class LauncherWindow(QWidget):
         header_label.setStyleSheet("font-size: 18px; font-weight: bold; margin-bottom: 4px;")
         main_layout.addWidget(header_label)
 
+        # Dynamic mode list with auto-calculated height and generous spacing
         self.mode_list = QListWidget()
-        self.mode_list.setFixedHeight(110)
+        self.mode_list.setObjectName("LauncherModeList")
+        self.mode_list.setSpacing(2)
+
+        item_height = 48
         for mode_name in self.modes_info.keys():
-            self.mode_list.addItem(QListWidgetItem(mode_name))
+            item = QListWidgetItem(mode_name)
+            item.setSizeHint(QSize(0, item_height))
+            self.mode_list.addItem(item)
+
+        # Auto-fit height to content so items never overlap and future modes fit cleanly
+        num_modes = len(self.modes_info)
+        total_list_height = num_modes * item_height + (num_modes - 1) * 6 + 16
+        self.mode_list.setFixedHeight(min(260, max(114, total_list_height)))
 
         desc_frame = QFrame()
         desc_frame.setObjectName("StatsPanel")
@@ -82,12 +126,29 @@ class LauncherWindow(QWidget):
         self.desc_box.setHtml(self.modes_info.get(mode_name, ""))
 
     def launch_mode(self, item=None):
-        row = self.mode_list.currentRow()
-        if row == 0:
-            self.active_window = SingleLabelWindow()
-        elif row == 1:
-            self.active_window = MultiLabelWindow()
+        if getattr(self, "_is_launching", False):
+            return
+        self._is_launching = True
 
-        if self.active_window:
-            self.active_window.show()
-            self.close()
+        if item is not None and hasattr(self.mode_list, "row"):
+            row = self.mode_list.row(item)
+        else:
+            row = self.mode_list.currentRow()
+
+        window_classes = {0: SingleLabelWindow, 1: MultiLabelWindow}
+        window_cls = window_classes.get(row)
+        if window_cls is None:
+            self._is_launching = False
+            return
+
+        # Defer window instantiation and display to the next event loop cycle.
+        # This allows Qt C++ QListWidget::mouseDoubleClickEvent to completely unwind
+        # its call stack before LauncherWindow is closed and destroyed.
+        QTimer.singleShot(0, lambda: self._safe_launch(window_cls))
+
+    def _safe_launch(self, window_cls):
+        try:
+            show_window(window_cls())
+        except Exception:
+            self._is_launching = False
+            raise

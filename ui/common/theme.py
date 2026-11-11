@@ -1,6 +1,8 @@
 import os
 import struct
 import zlib
+from PySide6.QtGui import QColor, QPalette
+from PySide6.QtWidgets import QApplication
 
 CHECK_ICON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkbox_checked.png").replace("\\", "/")
 
@@ -53,7 +55,8 @@ THEME_COLORS = {
     "danger": "#A80000",
     "border": "#D0D0D0",
     "surface": "#FFFFFF",
-    "text": "#000000",
+    "background": "#F4F6F9",
+    "text": "#212529",
     "text_muted": "#606060"
 }
 
@@ -112,6 +115,7 @@ SCROLLBAR_STYLE = """
 CHECKBOX_STYLE = f"""
     QCheckBox {{
         background-color: transparent;
+        color: #212529;
     }}
     QCheckBox::indicator {{
         width: 17px;
@@ -132,6 +136,20 @@ CHECKBOX_STYLE = f"""
 """
 
 GLOBAL_STYLESHEET = f"""
+    QMainWindow, QDialog {{
+        background-color: #F4F6F9;
+        color: #212529;
+    }}
+
+    QWidget {{
+        color: #212529;
+    }}
+
+    QLabel {{
+        color: #212529;
+        background-color: transparent;
+    }}
+
     QFrame#ControlPanel, QFrame#StatsPanel, QFrame#ViewerPanel {{
         background-color: #FFFFFF;
         border: 1px solid #D0D0D0;
@@ -149,10 +167,15 @@ GLOBAL_STYLESHEET = f"""
     QPushButton#BtnPrimary:hover {{
         background-color: #1084D9;
     }}
+    QPushButton#BtnPrimary:disabled {{
+        background-color: #C0C0C0;
+        border-color: #B0B0B0;
+        color: #FFFFFF;
+    }}
 
     QPushButton#BtnSecondary {{
         background-color: #F0F0F0;
-        color: #000000;
+        color: #212529;
         border: 1px solid #ADADAD;
         padding: 6px 14px;
         border-radius: 3px;
@@ -173,13 +196,77 @@ GLOBAL_STYLESHEET = f"""
         background-color: #F9D6D5;
     }}
 
+    QComboBox {{
+        background-color: #FFFFFF;
+        color: #212529;
+        border: 1px solid #D0D0D0;
+        border-radius: 3px;
+        padding: 4px 8px;
+        min-height: 22px;
+    }}
+    QComboBox:hover {{
+        border-color: #0078D7;
+    }}
+    QComboBox::drop-down {{
+        subcontrol-origin: padding;
+        subcontrol-position: top right;
+        width: 20px;
+        border-left: 1px solid #D0D0D0;
+    }}
+    QComboBox QAbstractItemView {{
+        background-color: #FFFFFF;
+        color: #212529;
+        selection-background-color: #E5F1FB;
+        selection-color: #000000;
+        border: 1px solid #D0D0D0;
+    }}
+
+    QTabWidget::pane {{
+        border: 1px solid #D0D0D0;
+        background-color: #FFFFFF;
+        top: -1px;
+    }}
+    QTabBar::tab {{
+        background-color: #E9ECEF;
+        color: #495057;
+        border: 1px solid #D0D0D0;
+        padding: 7px 18px;
+        border-top-left-radius: 4px;
+        border-top-right-radius: 4px;
+        margin-right: 2px;
+    }}
+    QTabBar::tab:selected {{
+        background-color: #FFFFFF;
+        color: #0078D7;
+        border-bottom-color: #FFFFFF;
+        font-weight: bold;
+    }}
+    QTabBar::tab:hover:!selected {{
+        background-color: #DEE2E6;
+    }}
+
+    QProgressBar {{
+        border: 1px solid #D0D0D0;
+        border-radius: 3px;
+        background-color: #E9ECEF;
+        text-align: center;
+        color: #212529;
+        font-weight: bold;
+    }}
+    QProgressBar::chunk {{
+        background-color: #0078D7;
+        border-radius: 2px;
+    }}
+
     QListWidget {{
         border: 1px solid #D0D0D0;
         border-radius: 3px;
         background-color: #FFFFFF;
+        color: #212529;
     }}
     QListWidget::item {{
         padding: 8px 12px;
+        color: #212529;
     }}
     QListWidget::item:selected {{
         background-color: #E5F1FB;
@@ -188,12 +275,20 @@ GLOBAL_STYLESHEET = f"""
 
     QTextEdit {{
         border: none;
-        background-color: transparent;
+        background-color: #FFFFFF;
+        color: #212529;
     }}
 
     QStackedWidget {{
         border: none;
         background: transparent;
+    }}
+
+    QToolTip {{
+        background-color: #FFFFFF;
+        color: #212529;
+        border: 1px solid #D0D0D0;
+        padding: 4px;
     }}
 
     {SCROLLBAR_STYLE}
@@ -228,3 +323,33 @@ SAMPLE_CARD_SELECTED_STYLE = f"""
     }}
     {CHECKBOX_STYLE}
 """
+
+def apply_light_theme(app: QApplication):
+    """Enforce a strict, high-contrast Light Theme across all platforms (ignoring OS dark mode)."""
+    app.setStyle("Fusion")
+
+    palette = QPalette()
+    # Main window and surfaces
+    palette.setColor(QPalette.Window, QColor(245, 246, 248))
+    palette.setColor(QPalette.WindowText, QColor(33, 37, 41))
+    palette.setColor(QPalette.Base, QColor(255, 255, 255))
+    palette.setColor(QPalette.AlternateBase, QColor(240, 242, 245))
+    palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+    palette.setColor(QPalette.ToolTipText, QColor(33, 37, 41))
+    palette.setColor(QPalette.Text, QColor(33, 37, 41))
+    palette.setColor(QPalette.Button, QColor(240, 240, 240))
+    palette.setColor(QPalette.ButtonText, QColor(33, 37, 41))
+    palette.setColor(QPalette.BrightText, QColor(215, 58, 73))
+    palette.setColor(QPalette.Link, QColor(0, 120, 215))
+    palette.setColor(QPalette.Highlight, QColor(0, 120, 215))
+    palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+
+    # Disabled element states
+    palette.setColor(QPalette.Disabled, QPalette.WindowText, QColor(140, 140, 140))
+    palette.setColor(QPalette.Disabled, QPalette.Text, QColor(140, 140, 140))
+    palette.setColor(QPalette.Disabled, QPalette.ButtonText, QColor(140, 140, 140))
+    palette.setColor(QPalette.Disabled, QPalette.Highlight, QColor(210, 210, 210))
+    palette.setColor(QPalette.Disabled, QPalette.HighlightedText, QColor(140, 140, 140))
+
+    app.setPalette(palette)
+    app.setStyleSheet(GLOBAL_STYLESHEET)
