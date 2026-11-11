@@ -3,7 +3,6 @@ import onnxruntime as ort
 
 logger = logging.getLogger("CellCounter.ONNX")
 
-
 class ONNXModel:
     def __init__(self, model_path):
         try:

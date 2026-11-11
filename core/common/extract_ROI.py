@@ -1,7 +1,6 @@
 import cv2
 import numpy as np
 
-
 def filter_interstitial_noise(circles_list, min_distance=45):
     valid_circles = []
     for circle in circles_list:
@@ -9,7 +8,6 @@ def filter_interstitial_noise(circles_list, min_distance=45):
                                                 np.array(valid_circles)[:, 1] - circle[1])) >= min_distance:
             valid_circles.append(circle)
     return np.array(valid_circles) if valid_circles else np.array([])
-
 
 def group_coordinates(coords, tolerance=15, min_points=2, max_gap=65):
     if len(coords) == 0:
@@ -27,7 +25,6 @@ def group_coordinates(coords, tolerance=15, min_points=2, max_gap=65):
             final_means.append(group_means[i])
     return final_means
 
-
 def estimate_skew_angle(coords, tolerance=20):
     if len(coords) < 3:
         return 0.0
@@ -44,7 +41,6 @@ def estimate_skew_angle(coords, tolerance=20):
         return 0.0
     median_angle_rad = np.median(angles)
     return np.degrees(median_angle_rad)
-
 
 def extract_perfect_grid(coords, raw_coords, expected=10):
     if len(coords) < 2:
@@ -69,7 +65,6 @@ def extract_perfect_grid(coords, raw_coords, expected=10):
                 if score > max_score:
                     max_score, best_grid = score, theoretical_grid
     return best_grid
-
 
 def crop_well_image(img_green, img_yellow, offset_x=0, offset_y=0):
     cropped_img = img_yellow.copy() if img_yellow is not None else img_green.copy()
